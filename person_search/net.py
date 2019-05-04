@@ -9,6 +9,7 @@ from fast_rcnn.test_probe import _im_exfeat
 import logging
 import caffe
 import numpy as np
+import gc
 
 base = osp.join(PERSON_SEARCH_HOME, "person_search", "net")
 cfg_path = osp.join(base, "resnet50.yml")
@@ -33,7 +34,8 @@ def __load_net(net_path):
 def extract_probe(query_img, blob_name="feat"):
     global gallery_net, probe_net, probe_path, model_path
     if gallery_net is not None:
-        del gallery_net
+        gallery_net = None
+        gc.collect()
     probe_net = probe_net or __load_net(probe_path)
     query_roi = [0, 0, query_img.shape[1], query_img.shape[0]]
     query_roi = np.asarray(query_roi).astype(np.float32).reshape(1, 4)
@@ -44,7 +46,8 @@ def extract_probe(query_img, blob_name="feat"):
 def extract_gallery(gallery_img, blob_name="feat"):
     global gallery_net, probe_net, gallery_path, model_path
     if probe_net is not None:
-        del probe_net
+        probe_net = None
+        gc.collect()
     gallery_net = gallery_net or __load_net(gallery_path)
     threshold = 0.5
     boxes, scores, feat_dic = _im_detect(
