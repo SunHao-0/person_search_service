@@ -1,0 +1,12 @@
+{
+  "type": "video",
+  "video_paths": [
+    "/home/sunha/Projects/person_search/person_search/input/test"
+  ],
+  "person_image_paths": [
+    "/home/sunha/Projects/person_search/person_search/input/query.png",
+    "/home/sunha/Projects/person_search/person_search/input/test2.png",
+    "/home/sunha/Projects/person_search/person_search/input/test12.png"
+  ],
+  "step": 50
+}

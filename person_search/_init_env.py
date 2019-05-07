@@ -14,7 +14,7 @@ def add_path(path):
 PERSON_SEARCH_HOME = os.environ.get("PERSON_SEARCH_HOME")
 if PERSON_SEARCH_HOME is None:
     raise RuntimeError("PERSON_SEARCH_HOME env var is required")
-
+OUTPUT_DIR = osp.join(PERSON_SEARCH_HOME, 'person_search', 'output')
 project_configuration = ConfigParser()
 config_file_path = osp.join(PERSON_SEARCH_HOME, "person_search", "app.conf")
 project_configuration.read(config_file_path)

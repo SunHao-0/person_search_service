@@ -1,34 +1,110 @@
 # encoding: utf-8
-import logging.config
-import net
-from cv2 import CAP_PROP_POS_FRAMES
+import logging
+
 import cv2
-import uuid
-import scipy.io as si
-from _init_env import PERSON_SEARCH_HOME
+from cv2 import CAP_PROP_POS_FRAMES
+
+import net
 
 logger = logging.getLogger(__name__)
 
 
-def process_video(video_name, person_images):
-    # 流程
-    # 生成处理方案 [video,step]
-    # 数据处理 线性单线程处理
-    # 数据存储 mat 存储
-    # 返回处理结果
-    reader, step, video_identifier = __gen_process_plan(video_name)
-    processed_data = __process_data(reader, step)
-    person_uuids = __process_person_img(person_images, processed_data)
-    __store_local(processed_data, video_identifier)
-    return video_identifier, step, processed_data, person_uuids
+def process_task(task_descriptor):
+    # task:{"identifier": ..., videos:{{"identifier":path} ... },person:{{"..":..}} }
+    task_identifier = task_descriptor["identifier"]
+    logger.info("Start processing task:%s" % task_identifier)
+    video_task = task_descriptor["videos"]
+    step = task_descriptor["step"] if "step" in task_descriptor else 50
+    processed_video = process_video_task(video_task, step)
+    person_task = task_descriptor["person"]
+    processed_person = process_person_task(person_task)
+    person_trace = process_trace(processed_video, step, processed_person)
+    logger.info("Processing finished")
+    return {"identifier": task_identifier,
+            "step": step,
+            "processed_videos": processed_video,
+            "processed_person": processed_person,
+            "trace": person_trace}
 
 
-def generate_trace(video_data, step):
-    person_uuids = video_data["person_uuids"]
+def process_video_task(video_task, step):
+    processed_video = {}
+    logger.info("Start processing video task,total task [%d] video(s)" % (len(video_task)))
+    for video_identifier in video_task:
+        video_path = video_task[video_identifier]
+        processed_data = process_video(video_path, step)
+        # store_mat(processed_data, video_identifier)
+        processed_video[video_identifier] = processed_data
+    logger.info("Video task processed finished")
+    return processed_video
+
+
+def process_person_task(person_task):
+    logger.info("Start processing person task, total person:%d" % len(person_task))
+    processed_data = {identifier: process_person_image(person_task[identifier])
+                      for identifier in person_task}
+    logger.info("Person processing finished")
+    return processed_data
+
+
+def process_video(video_name, step):
+    video_reader = cv2.VideoCapture(video_name)
+    is_open, _ = video_reader.read()  # 试读 预热
+    if not is_open:
+        raise RuntimeError("No such video:" + video_name)
+    dic = {"boxes": [], "features": [], "frame_nos": []}  # "frame": [],
+    current_frame, ret = (0, True)
+    logger.info("Processing video: [%s] ..." % video_name)
+    while ret:
+        video_reader.set(CAP_PROP_POS_FRAMES, current_frame)
+        ret, frame = video_reader.read()
+        if not ret:
+            break
+        boxes, features = net.extract_gallery(frame)
+        if boxes is not None:
+            # dic["frame"].append(frame)
+            dic["boxes"].append(boxes)
+            dic["features"].append(features)
+            dic["frame_nos"].append(current_frame)
+        current_frame += step
+    processed_num = len(dic["features"])
+    logger.info("Video Processed finished: total processed:%s frames" % processed_num)
+    return dic
+
+
+def process_person_image(person_image):
+    im = cv2.imread(person_image)
+    logger.info("[%s] processed" % person_image)
+    return net.extract_probe(im)
+
+
+def process_trace(processed_videos, step, processed_person):
+    logger.info("Start processing trace")
+    if len(processed_videos) == 0:
+        logger.warning("NO TRACE GENERATED,PROCESSED VIDEO DATA IS EMPTY")
+        return {}
+    # processed_video{"identifier":data}
+    trace_map = {person_identifier: {video_identifier: [] for video_identifier in processed_videos}
+                 for person_identifier in processed_person}
+    for video_identifier in processed_videos:
+        part_trace = generate_video_trace(processed_videos[video_identifier], processed_person, step)
+        for person_identifier, t in part_trace:
+            trace_map[person_identifier][video_identifier].extend(t)
+    info = {
+        person_identifier:
+            {video_identifier: len(trace_map[person_identifier][video_identifier])
+             for video_identifier in trace_map[person_identifier]}
+        for person_identifier in trace_map}
+    logger.info("Trace generated finished, info:\n%s" % info)
+    return trace_map
+
+
+def generate_video_trace(video_data, person_mat, step):
+    person_uuids = person_mat.keys()
     # TODO fix index,currently this function can only work with process video
-    person_mat = [(uui, video_data[uui]["feature"]) for uui in person_uuids]
+    person_mat = [(uui, person_mat[uui]) for uui in person_uuids]
     frames_feature = video_data["features"]  # TODO fix bug
-    frames_nos = video_data["frame_no"]
+    frames_nos = video_data["frame_nos"]
     if len(frames_nos) == 0:
         logger.warning("Trying to generate trace on empty video data")
         return []
@@ -36,27 +112,7 @@ def generate_trace(video_data, step):
     row_traces = map(lambda person: (person[0], __candidate_frame(person[1], frames_feature, frames_nos)),
                      person_mat)
     trace_map = map(lambda pair: (pair[0], __group(pair[1], step)), row_traces)
-    info = [(uui, len(traces)) for (uui, traces) in trace_map]
-    logger.info("Trace map:\n" + str(info))
     return trace_map
-
-
-def read_mat(identifier):
-    # need convert
-    import os.path as osp
-    mat_path = osp.join(PERSON_SEARCH_HOME, "person_search", "output", identifier + ".mat");
-    row_mat_data = si.loadmat(mat_path)
-    origin_mat = {
-        "person_uuids": [str(uui) for uui in row_mat_data["person_uuids"]],
-        "features": row_mat_data["features"][0],
-        "frame": row_mat_data["frame"],
-        "frame_no": row_mat_data["frame_no"][0],
-        "boxes": row_mat_data["boxes"][0]
-    }
-    for uui in origin_mat["person_uuids"]:
-        origin_mat[uui] = {"feature": row_mat_data[uui][0]['feature'][0],
-                           "image": row_mat_data[uui][0]['image'][0]}
-    return origin_mat
 
 
 def __candidate_frame(person, frame_features, frame_nos, th=0.65):
@@ -67,6 +123,8 @@ def __candidate_frame(person, frame_features, frame_nos, th=0.65):
 
 def __group(frame_nos, step=50):
     result_group = []
+    if len(frame_nos) == 0:
+        return result_group
     start = frame_nos[0]
     last_frame = start
     for frame_no in frame_nos:
@@ -77,72 +135,6 @@ def __group(frame_nos, step=50):
     return result_group
 
 
-def __gen_process_plan(video_name):
-    cv2_video_reader = cv2.VideoCapture(video_name)
-    is_open, _ = cv2_video_reader.read()  # 试读 预热
-    if not is_open:
-        raise RuntimeError("No such video:" + video_name)
-    step = 50
-    video_identifier = str(uuid.uuid1()).replace("-", "")
-    logger.debug("Process Plan:\n video_name:%s\n step:%s\n identifier:%s" % (video_name, step, video_identifier))
-    return cv2_video_reader, step, video_identifier
-
-
-def __process_data(video_reader, step):
-    dic = {"frame": [], "boxes": [], "features": [], "frame_no": []}
-    current_frame, ret = (0, True)
-    logger.info("Processing video data ...")
-    while ret:
-        video_reader.set(CAP_PROP_POS_FRAMES, current_frame)
-        ret, frame = video_reader.read()
-        if not ret:
-            logger.info("Process stop at:%s frame" % str(current_frame))
-            break
-        boxes, features = net.extract_gallery(frame)
-        if boxes is not None:
-            dic["frame"].append(frame)
-            dic["boxes"].append(boxes)
-            dic["features"].append(features)
-            dic["frame_no"].append(current_frame)
-        current_frame += step
-    processed_num = len(dic["frame"])
-    logger.info("Video Processed finished: total processed:%s frames" % processed_num)
-    return dic
-
-
-def __process_person_img(person_images, dic):
-    logger.info("Person to be processed:%d" % (len(person_images)))
-    person_mats = [cv2.imread(person) for person in person_images]
-    person_uuids = [str(uuid.uuid1()).replace("-", "") for _ in person_images]
-    person_mats_features = [{"image": image, "feature": net.extract_probe(image)} for uui, image in
-                            zip(person_uuids, person_mats)]
-    dic["person_uuids"] = person_uuids
-    for uui, mat_feature in zip(person_uuids, person_mats_features):
-        dic[uui] = mat_feature
-    logger.info("Person processed number:%d" % len(person_mats))
-    return person_uuids
-
-
-def __store_local(data, video_identifier):
-    if len(data["frame"]) <= 0:
-        logger.warn("Trying to store empty data into local mat")
-        return
-    import os.path as osp
-    video_mat_path = osp.join(PERSON_SEARCH_HOME, "person_search", "output")
-    si.savemat(osp.join(video_mat_path, str(video_identifier)), data)
-    logger.info("Video mat:[%s] saved to:%s" % (video_identifier, video_mat_path))
-    return video_identifier
-
-
-def test_process_person_image():
-    import os.path as osp
-    input_path = "/home/sunha/Projects/person_search/person_search/input"
-    video_path = input_path + "/test"
-    person_path = ["query.png", "test2.png", "test12.png"]
-    person_path = [osp.join(input_path, image_name) for image_name in person_path]
-    result = {}
-    __process_person_img(person_path, result)
-
-
 if __name__ == "__main__":
-    test_process_person_image()
+    # test_process_person_image()
+    pass
